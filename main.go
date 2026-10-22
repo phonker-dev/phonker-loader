@@ -13,17 +13,34 @@ import (
 	"syscall"
 )
 
-var appVersion = "1.1.0" // перезаписывается при сборке: -ldflags "-X main.appVersion=..."
+var appVersion = "dev" // при сборке подставляется из файла VERSION (build.bat)
 
 var (
+	guiMode     bool   // программа работает в окне (а не в консоли)
 	appDir      string // папка, где лежит exe
 	downloadDir string
 )
 
+// Режимы запуска:
+//
+//	PhonkerLoader.exe            — окно с вкладками (по умолчанию)
+//	PhonkerLoader.exe --bot      — окно, бот запускается сразу (автозапуск с Windows)
+//	PhonkerLoader.exe --console  — консольный интерфейс, как в версиях 1.x
 func main() {
-	setupConsole()
+	guiMode = !hasFlag("--console")
+	if !guiMode {
+		ensureConsole()
+		setupConsole()
+	}
+	openLog()
 	defer func() {
 		if r := recover(); r != nil {
+			logf("АВАРИЯ: %v\n%s", r, debug.Stack())
+			if guiMode {
+				messageBox(fmt.Sprintf("Программа аварийно остановилась: %v\n\nПожалуйста, отправь этот текст разработчику:\n%s",
+					r, truncate(string(debug.Stack()), 1500)))
+				shutdown(1)
+			}
 			fmt.Println()
 			printErr("Программа аварийно остановилась: %v", r)
 			printHint("Пожалуйста, отправь этот текст разработчику:")
@@ -44,32 +61,51 @@ func main() {
 		fatal(err)
 	}
 	loadSettings()
+	loadBotData()
+	refreshAutostart()
+	checkLatestYtdlp()
 	if tools, err = newToolset(); err != nil {
 		fatal(err)
 	}
 	go tools.extract()
 
+	if guiMode {
+		runGUI()
+		shutdown(0)
+	}
+
+	// PhonkerLoader.exe --console --bot — сразу запустить бота в консоли.
+	if hasFlag("--bot") {
+		if cfg.BotToken == "" {
+			printErr("Токен бота не указан: [5] Telegram-бот → [6] Токен бота.")
+		} else {
+			runBot()
+		}
+	}
 	mainMenu()
 	shutdown(0)
 }
-
 func printMenu() {
 	header("PHONKER LOADER  v" + appVersion)
 	fmt.Println(" [1] Скачать видео или музыку")
 	fmt.Println(" [2] Открыть папку загрузок")
 	fmt.Println(" [3] История загрузок")
-	fmt.Println(" [4] Обновить yt-dlp")
-	if cookiesSource() != "" {
-		fmt.Println(" [5] Cookies " + green("(подключены)"))
+	fmt.Println(" [4] Статистика")
+	if reqs := len(botDB.requests()); reqs > 0 {
+		fmt.Println(" [5] Telegram-бот " + yellow(fmt.Sprintf("(ждут доступа: %d)", reqs)))
 	} else {
-		fmt.Println(" [5] Cookies " + dim("(не нужны для большинства видео)"))
+		fmt.Println(" [5] Telegram-бот")
 	}
+	fmt.Println(" [6] Настройки " + dim("(прокси, cookies, обновление)"))
+	fmt.Println(" [7] Как пользоваться")
 	fmt.Println(" [0] Выход")
-	fmt.Println(rule)
-	if age := ytdlpAge(tools.ytdlpVersion); age > 60 {
-		fmt.Println(yellow(fmt.Sprintf(" yt-dlp %s устарел (%d дн.) — если видео не качаются, выбери [4]",
-			tools.ytdlpVersion, age)))
+	fmt.Println(rule())
+	fmt.Println(dim(" Скачано : ") + statsSummary())
+	fmt.Println(dim(" Прокси  : ") + proxyStatusLine())
+	if v := ytdlpUpdateAvailable(); v != "" {
+		fmt.Println(yellow(" Вышла новая версия yt-dlp " + v + " — обнови: [6] → Обновить"))
 	}
+	fmt.Println(rule())
 	fmt.Println()
 }
 
@@ -83,9 +119,9 @@ func mainMenu() {
 			showMenu, hinted = false, false
 		}
 
-		choice := prompt("Введи номер или сразу вставь ссылку: ")
+		choice := prompt("Вставь ссылку или введи номер: ")
 		if looksLikeURL(choice) {
-			downloadFlow(choice)
+			downloadLoop(choice)
 			showMenu = true
 			continue
 		}
@@ -94,9 +130,10 @@ func mainMenu() {
 			eraseInputLine()
 			continue
 		case "1":
-			url := prompt("\nВставь ссылку (YouTube, Twitch и др.): ")
-			if url != "" {
-				downloadFlow(url)
+			header("ЗАГРУЗКА")
+			fmt.Println(" Подходят YouTube, TikTok, VK, Twitch, Instagram и сотни других сайтов.")
+			if url := prompt("\nВставь ссылку (Enter — назад): "); url != "" {
+				downloadLoop(url)
 			}
 		case "2":
 			openFolder(downloadDir, "")
@@ -104,18 +141,16 @@ func mainMenu() {
 			continue
 		case "3":
 			if url := historyMenu(); url != "" {
-				downloadFlow(url)
+				downloadLoop(url)
 			}
 		case "4":
-			fmt.Println()
-			if err := tools.wait(); err != nil {
-				printErr("%v", err)
-			} else if err := updateYtdlp(); err != nil {
-				cancelled.Store(false)
-				printErr("Не удалось обновить: %v", err)
-			}
+			statsScreen()
 		case "5":
-			cookiesMenu()
+			botMenu()
+		case "6":
+			settingsMenu()
+		case "7", "?":
+			helpScreen()
 		case "0", "q", "й", "exit", "выход":
 			return
 		default:
@@ -130,46 +165,73 @@ func mainMenu() {
 		showMenu = true
 	}
 }
-func downloadFlow(url string) {
+
+// downloadLoop качает по ссылке и сразу предлагает вставить следующую —
+// не нужно каждый раз возвращаться в меню.
+func downloadLoop(url string) {
+	for url != "" {
+		file, finished := downloadFlow(url)
+		if !finished {
+			return // пользователь отменил на одном из вопросов
+		}
+		ask := "\nСледующая ссылка (Enter — в меню"
+		if file != "" {
+			ask += ", O — показать файл"
+		}
+		in := prompt(dim(ask + "): "))
+		switch {
+		case file != "" && (strings.EqualFold(in, "o") || strings.EqualFold(in, "щ")):
+			openFolder(downloadDir, file)
+			url = ""
+		case looksLikeURL(in):
+			url = in
+		default:
+			url = ""
+		}
+	}
+}
+
+// downloadFlow — одна загрузка. finished=false — пользователь отменил её на вопросе.
+func downloadFlow(url string) (file string, finished bool) {
 	url = normalizeURL(url)
 	cancelled.Store(false)
 	defer cancelled.Store(false)
 
-	fmt.Println()
+	header("ЗАГРУЗКА")
+	fmt.Println(dim(" " + truncate(url, consoleWidth()-2)))
 	if err := tools.wait(); err != nil {
 		printErr("%v", err)
 		printHint("Возможно, антивирус удалил файлы из временной папки. Добавь программу в исключения.")
-		return
+		return "", true
 	}
 
 	var err error
 	if cookieArgs, err = prepareCookies(); err != nil {
 		printErr("%v", err)
-		printHint("Исправь или убери файл в пункте меню [5]. Без cookies большинство видео тоже качается.")
-		return
+		printHint("Исправь или убери файл: Настройки → Cookies. Без cookies большинство видео тоже качается.")
+		return "", true
 	}
 
 	info, yerr := probe(url)
 	if yerr != nil {
 		reportError(yerr)
-		return
+		return "", true
 	}
 
 	if info.LiveStatus == "is_live" || info.LiveStatus == "is_upcoming" || info.IsLive {
 		printErr("Это прямая трансляция — её можно скачать после окончания эфира.")
-		return
+		return "", true
 	}
 
-	opts := downloadOptions{}
 	if info.isPlaylist() {
 		fmt.Printf(" Плейлист : %s\n", bold(info.Title))
 		fmt.Printf(" Видео    : %d\n", len(info.Entries))
 		if len(info.Entries) == 0 {
 			printErr("Плейлист пуст или недоступен.")
-			return
+			return "", true
 		}
 		if !confirm("\nСкачать весь плейлист? [Y/n]: ") {
-			return
+			return "", false
 		}
 	} else {
 		fmt.Printf(" Название : %s\n", bold(info.Title))
@@ -181,96 +243,94 @@ func downloadFlow(url string) {
 		}
 	}
 
-	var ok bool
-	if opts.height, opts.audioOnly, ok = chooseQuality(info); !ok {
-		return
+	opts, ok := chooseQuality(url, info)
+	if !ok {
+		return "", false
 	}
 	if !info.isPlaylist() {
 		if opts.start, opts.end, ok = chooseFragment(info.Duration); !ok {
-			return
+			return "", false
 		}
 	}
 
 	fmt.Println()
-	res, yerr := download(url, info, opts)
+	op := newOperation()
+	res, yerr := download(op, url, info, opts, nil)
+	op.finish()
 	if yerr != nil {
 		reportError(yerr)
-		return
+		return "", true
 	}
+
+	total := recordDownload(url, info, res)
 
 	switch {
 	case len(res.files) == 0:
 		printOK("Готово. Файл уже был скачан ранее — смотри в папке загрузок.")
 	case len(res.files) == 1:
-		printOK("Готово: %s", filepath.Base(res.files[0]))
+		printOK("Готово: %s (%s)", filepath.Base(res.files[0]), formatBytes(float64(total)))
+		file = res.files[0]
 	default:
-		printOK("Готово: скачано файлов — %d", len(res.files))
+		printOK("Готово: скачано файлов — %d (%s)", len(res.files), formatBytes(float64(total)))
 	}
 	if res.failed > 0 {
 		fmt.Println(yellow(fmt.Sprintf("       Не удалось скачать: %d (удалены, приватные или недоступны)", res.failed)))
 	}
 	printHint("Папка: %s", downloadDir)
-
-	switch {
-	case info.isPlaylist():
-		for _, f := range res.files {
-			appendHistory(strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), url, f)
-		}
-	case len(res.files) > 0:
-		appendHistory(info.Title, url, res.files[0])
-	default:
-		appendHistory(info.Title, url, "")
-	}
-
-	if len(res.files) == 1 {
-		if a := prompt(dim("\nEnter — в меню, O — показать файл в папке: ")); strings.EqualFold(a, "o") || a == "щ" || a == "Щ" {
-			openFolder(downloadDir, res.files[0])
-		}
-	}
+	return file, true
 }
 
 var qualitySteps = []int{2160, 1440, 1080, 720, 480, 360}
 
-func chooseQuality(info *mediaInfo) (height int, audio, ok bool) {
-	max := info.maxHeight()
-	if info.isPlaylist() {
-		max = 2160 // у плоского списка форматов нет — предлагаем всё
-	}
-
+// chooseQuality спрашивает формат. Для музыкальных платформ (SoundCloud и т.п.) видео нет —
+// там сразу MP3 или MP4 со статичной обложкой.
+func chooseQuality(link string, info *mediaInfo) (downloadOptions, bool) {
 	type option struct {
-		label  string
-		height int
-		audio  bool
+		label string
+		opts  downloadOptions
 	}
 	var opts []option
-	if max > 0 {
-		opts = append(opts, option{fmt.Sprintf("Максимальное (%s)", heightLabel(max)), max, false})
-		for _, h := range qualitySteps {
-			if h < max {
-				opts = append(opts, option{heightLabel(h), h, false})
-			}
+	title := "Качество:"
+	if audioOnly(link, info) {
+		title = "Это музыка — видео здесь нет. Формат:"
+		opts = []option{
+			{"MP3", downloadOptions{audioOnly: true}},
+			{"MP4 с обложкой трека " + dim("(для соцсетей и Telegram)"), downloadOptions{cover: true}},
 		}
 	} else {
-		opts = append(opts, option{"Видео (лучшее доступное)", 0, false})
+		max := info.maxHeight()
+		if info.isPlaylist() {
+			max = 2160 // у плоского списка форматов нет — предлагаем всё
+		}
+		if max > 0 {
+			opts = append(opts, option{fmt.Sprintf("Максимальное (%s)", heightLabel(max)), downloadOptions{height: max}})
+			for _, h := range qualitySteps {
+				if h < max {
+					opts = append(opts, option{heightLabel(h), downloadOptions{height: h}})
+				}
+			}
+		} else {
+			opts = append(opts, option{"Видео (лучшее доступное)", downloadOptions{}})
+		}
+		opts = append(opts, option{"Только звук (MP3)", downloadOptions{audioOnly: true}})
 	}
-	opts = append(opts, option{"Только звук (MP3)", 0, true})
 
-	fmt.Println("\nКачество:")
+	fmt.Println("\n" + title)
 	for i, o := range opts {
 		fmt.Printf(" [%d] %s\n", i+1, o.label)
 	}
 	fmt.Println(dim(" [0] Отмена"))
 	hinted := false
 	for {
-		in := prompt("Введи номер (Enter — " + opts[0].label + "): ")
+		in := prompt("Введи номер (Enter — [1]): ")
 		if in == "" {
-			return opts[0].height, opts[0].audio, true
+			return opts[0].opts, true
 		}
 		if in == "0" {
-			return 0, false, false
+			return downloadOptions{}, false
 		}
 		if n, err := strconv.Atoi(in); err == nil && n >= 1 && n <= len(opts) {
-			return opts[n-1].height, opts[n-1].audio, true
+			return opts[n-1].opts, true
 		}
 		if hinted {
 			eraseInputLine()
@@ -280,7 +340,6 @@ func chooseQuality(info *mediaInfo) (height int, audio, ok bool) {
 		}
 	}
 }
-
 func heightLabel(h int) string {
 	switch {
 	case h >= 2160:
@@ -316,7 +375,7 @@ func chooseFragment(duration float64) (start, end float64, ok bool) {
 func historyMenu() string {
 	list := readHistory()
 	if len(list) == 0 {
-		fmt.Println("\nИстория пуста.")
+		remember(" История пуста — здесь появятся скачанные видео.")
 		return ""
 	}
 	const show = 20
@@ -335,7 +394,7 @@ func historyMenu() string {
 		fmt.Println(truncate(fmt.Sprintf(" [%d] %s | %s", e.ID, date, e.Title), width))
 		fmt.Println(dim(truncate("      "+e.URL, width)))
 	}
-	fmt.Println(rule)
+	fmt.Println(rule())
 	if from > 0 {
 		fmt.Println(dim(fmt.Sprintf(" Показаны последние %d из %d.", show, len(list))))
 	}
@@ -389,6 +448,27 @@ func normalizeURL(s string) string {
 		s = "https://" + s
 	}
 	return s
+}
+
+// recordDownload записывает загрузку в историю и возвращает общий размер файлов.
+func recordDownload(url string, info *mediaInfo, res *downloadResult) int64 {
+	switch {
+	case info.isPlaylist():
+		for _, f := range res.files {
+			appendHistory(strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), url, f)
+		}
+	case len(res.files) > 0:
+		appendHistory(info.Title, url, res.files[0])
+	default:
+		appendHistory(info.Title, url, "")
+	}
+	var total int64
+	for _, f := range res.files {
+		if st, err := os.Stat(f); err == nil {
+			total += st.Size()
+		}
+	}
+	return total
 }
 
 // ---------- папки ----------
@@ -452,7 +532,7 @@ func handleSignals() {
 	go func() {
 		for sig := range ch {
 			// Ctrl+C во время загрузки — отменить загрузку (yt-dlp получает Ctrl+C сам).
-			if sig == os.Interrupt && running.Load() {
+			if sig == os.Interrupt && (running.Load() > 0 || botActive.Load()) {
 				cancelled.Store(true)
 				continue
 			}
@@ -468,6 +548,13 @@ var shutdownOnce sync.Once
 
 func shutdown(code int) {
 	shutdownOnce.Do(func() {
+		logf("выход, код %d", code)
+		if f := botOnExit.Load(); f != nil {
+			(*f)() // бот работал — ставим статус «не в сети»
+		}
+		if guiMode {
+			closeWindow()
+		}
 		if tools != nil {
 			tools.remove()
 		}
@@ -475,7 +562,20 @@ func shutdown(code int) {
 	os.Exit(code)
 }
 
+func hasFlag(name string) bool {
+	for _, a := range os.Args[1:] {
+		if strings.EqualFold(a, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func fatal(err error) {
+	if guiMode {
+		messageBox("Не удалось запустить программу: " + err.Error())
+		shutdown(1)
+	}
 	printErr("%v", err)
 	waitEnter("Нажми Enter, чтобы закрыть...")
 	shutdown(1)

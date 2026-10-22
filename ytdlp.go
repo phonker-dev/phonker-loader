@@ -24,6 +24,7 @@ type mediaInfo struct {
 	Title      string  `json:"title"`
 	Uploader   string  `json:"uploader"`
 	Channel    string  `json:"channel"`
+	Thumbnail  string  `json:"thumbnail"`
 	Duration   float64 `json:"duration"`
 	LiveStatus string  `json:"live_status"`
 	IsLive     bool    `json:"is_live"`
@@ -72,6 +73,7 @@ func baseArgs() []string {
 		"--ffmpeg-location", tools.ffmpeg,
 		"--force-ipv4",
 	}
+	args = append(args, proxyArgs()...)
 	return append(args, cookieArgs...)
 }
 
@@ -118,7 +120,7 @@ func (e *ytError) explain() (text, hint string) {
 	switch {
 	case has("getaddrinfo", "failed to resolve", "name resolution", "network is unreachable",
 		"timed out", "connection refused", "no route to host", "connection reset"):
-		return "нет соединения с сайтом", "Проверь интернет. Если YouTube у тебя открывается только через VPN — включи его."
+		return "нет соединения с сайтом", networkHint()
 	case has("unsupported url"):
 		return "ссылка не поддерживается", "Нужна ссылка на конкретное видео, shorts, плейлист или запись трансляции."
 	case has("is not a valid url", "no such file", "unable to open"):
@@ -142,7 +144,7 @@ func (e *ytError) explain() (text, hint string) {
 	case has("http error 403", "forbidden"):
 		return "YouTube отклонил запрос (ошибка 403), повторные попытки не помогли", forbiddenHint()
 	case has("unable to extract", "signature", "nsig", "player response", "challenge", "po token"):
-		return "сайт изменил защиту и отклонил запрос", "Обнови yt-dlp через пункт меню [4] и попробуй снова."
+		return "сайт изменил защиту и отклонил запрос", "Обнови yt-dlp: Настройки → Обновить yt-dlp, и попробуй снова."
 	case has("no space left", "disk full"):
 		return "на диске закончилось место", ""
 	case has("permission denied", "access is denied"):
@@ -159,23 +161,35 @@ func (e *ytError) forbidden() bool {
 func forbiddenHint() string {
 	h := "Подожди пару минут и попробуй снова. Если пользуешься VPN — смени сервер."
 	if len(cookieArgs) > 0 {
-		h += "\n       С cookies YouTube отдаёт 403 чаще — попробуй отключить их (пункт [5])."
+		h += "\n       С cookies YouTube отдаёт 403 чаще — попробуй отключить их (Настройки → Cookies)."
 	}
 	return h
+}
+
+func networkHint() string {
+	addr, source := currentProxy()
+	if addr == "" {
+		return "Проверь интернет. Если сайт открывается только через VPN или прокси — включи его."
+	}
+	if !proxyAlive(addr) {
+		return "Используется прокси " + addr + " (" + source + "), но он не отвечает.\n" +
+			"       Запусти v2rayN/Happ или выключи прокси: Настройки → Прокси."
+	}
+	return "Используется прокси " + addr + " (" + source + "). Попробуй сменить сервер в v2rayN/Happ."
 }
 
 // loginHint — подсказка для видео, требующих вход в аккаунт.
 func loginHint() string {
 	if len(cookieArgs) > 0 {
 		return "Cookies указаны, но сайт их не принял — скорее всего, они устарели.\n" +
-			"       Экспортируй их заново из браузера (пункт меню [5])."
+			"       Экспортируй их заново из браузера (Настройки → Cookies)."
 	}
-	return "Укажи файл со своими cookies в пункте меню [5] и повтори загрузку."
+	return "Укажи файл со своими cookies: Настройки → Cookies, и повтори загрузку."
 }
 
 // run запускает yt-dlp, передавая каждую строку stdout/stderr в onLine.
 // Строки делятся и по \n, и по \r — так yt-dlp выводит прогресс.
-func run(args []string, onStdout func(string), stdoutTo io.Writer) *ytError {
+func run(op *operation, args []string, onStdout func(string), stdoutTo io.Writer) *ytError {
 	cmd := tools.command(args...)
 	var stderr bytes.Buffer
 	stderrPipe, _ := cmd.StderrPipe()
@@ -185,11 +199,11 @@ func run(args []string, onStdout func(string), stdoutTo io.Writer) *ytError {
 	} else {
 		stdoutPipe, _ = cmd.StdoutPipe()
 	}
-	if err := start(cmd); err != nil {
+	if err := start(cmd, op); err != nil {
 		return &ytError{msg: "не удалось запустить yt-dlp: " + err.Error()}
 	}
-	running.Store(true)
-	defer running.Store(false)
+	running.Add(1)
+	defer running.Add(-1)
 
 	var wg sync.WaitGroup
 	var stderrMu sync.Mutex
@@ -222,7 +236,7 @@ func run(args []string, onStdout func(string), stdoutTo io.Writer) *ytError {
 	}
 	wg.Wait()
 	err := cmd.Wait()
-	if cancelled.Load() {
+	if op.aborted() {
 		return &ytError{msg: "отменено", aborted: true}
 	}
 	if err != nil {
@@ -244,31 +258,36 @@ func scanLinesCR(data []byte, atEOF bool) (int, []byte, error) {
 }
 
 var (
-	running   atomic.Bool // идёт работа yt-dlp — Ctrl+C отменяет её, а не закрывает программу
+	running   atomic.Int32 // сколько yt-dlp сейчас работает — Ctrl+C отменяет их, а не закрывает программу
 	cancelled atomic.Bool
 	infoSeq   atomic.Int64
 )
 
-// probe получает информацию о видео.
+// probe получает информацию о видео (консольный режим — со спиннером).
 func probe(url string) (*mediaInfo, *ytError) {
 	l := startLive("Получаю информацию о видео...")
 	defer l.Stop()
-	info, yerr := probeOnce(url)
-	if yerr != nil && yerr.forbidden() {
+	return probeInfo(nil, url)
+}
+
+// probeInfo получает информацию о видео; при 403 повторяет один раз.
+func probeInfo(op *operation, url string) (*mediaInfo, *ytError) {
+	info, yerr := probeOnce(op, url)
+	if yerr != nil && yerr.forbidden() && !op.aborted() {
 		time.Sleep(2 * time.Second)
-		info, yerr = probeOnce(url)
+		info, yerr = probeOnce(op, url)
 	}
 	return info, yerr
 }
 
-func probeOnce(url string) (*mediaInfo, *ytError) {
+func probeOnce(op *operation, url string) (*mediaInfo, *ytError) {
 	path := filepath.Join(tools.dir, fmt.Sprintf("info-%d.json", infoSeq.Add(1)))
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, &ytError{msg: err.Error()}
 	}
 	args := append(baseArgs(), "-J", "--flat-playlist", "--no-playlist", "--", url)
-	yerr := run(args, nil, f)
+	yerr := run(op, args, nil, f)
 	f.Close()
 	if yerr != nil {
 		os.Remove(path)
@@ -295,6 +314,7 @@ func probeOnce(url string) (*mediaInfo, *ytError) {
 type downloadOptions struct {
 	height    int  // 0 — лучшее доступное (разрешение неизвестно)
 	audioOnly bool // MP3
+	cover     bool // MP4 со статичной обложкой — для музыкальных платформ
 	start     float64
 	end       float64 // 0 — без нарезки
 }
@@ -309,6 +329,9 @@ const progressTemplate = "download:@@P %(progress.status)s|%(progress.downloaded
 	"%(info.playlist_index)s|%(info.n_entries)s|%(info.title)s"
 
 func formatArgs(o downloadOptions) []string {
+	if o.cover {
+		return coverArgs()
+	}
 	if o.audioOnly {
 		return []string{
 			"-f", "ba/b",
@@ -336,12 +359,29 @@ func formatArgs(o downloadOptions) []string {
 
 const maxAttempts = 3
 
-func download(url string, info *mediaInfo, o downloadOptions) (*downloadResult, *ytError) {
+// progressSink — куда показывать прогресс: строка в консоли или карточка в окне.
+type progressSink interface {
+	Set(label string, percent float64, detail string)
+	SetLabel(label string)
+	Println(s string)
+}
+
+// download качает по ссылке. op — операция (отмена, временная папка), sink — прогресс;
+// без sink прогресс рисуется строкой в консоли.
+func download(op *operation, url string, info *mediaInfo, o downloadOptions, sink progressSink) (*downloadResult, *ytError) {
+	work := op.work
+	// Для MP4 с обложкой yt-dlp кладёт звук и картинку во временную папку,
+	// а готовое видео собирается уже в папку загрузок.
+	home := downloadDir
+	coverDir := filepath.Join(work, "cover")
+	if o.cover {
+		home = coverDir
+	}
 	args := baseArgs()
 	args = append(args, formatArgs(o)...)
 	args = append(args,
-		"-P", downloadDir,
-		"-P", "temp:"+tools.work,
+		"-P", home,
+		"-P", "temp:"+work,
 		"--no-mtime",
 		"--concurrent-fragments", "4",
 		"--quiet", "--progress", "--newline",
@@ -365,8 +405,13 @@ func download(url string, info *mediaInfo, o downloadOptions) (*downloadResult, 
 
 	res := &downloadResult{}
 	seen := map[string]bool{}
-	l := startLive("Подключение...")
-	p := &progressView{live: l, audioOnly: o.audioOnly, playlist: info.isPlaylist()}
+	var l progressSink = sink
+	var live *liveLine
+	if sink == nil {
+		live = startLive("Подключение...")
+		l = live
+	}
+	p := &progressView{live: l, audioOnly: o.audioOnly || o.cover, playlist: info.isPlaylist()}
 	onLine := func(line string) {
 		if strings.HasPrefix(line, "@@F ") {
 			if f := strings.TrimSpace(line[4:]); !seen[f] {
@@ -384,7 +429,7 @@ func download(url string, info *mediaInfo, o downloadOptions) (*downloadResult, 
 		if !info.isPlaylist() {
 			a = append(a[:len(a):len(a)], "--load-info-json", info.infoFile)
 		}
-		yerr = run(a, onLine, nil)
+		yerr = run(op, a, onLine, nil)
 		if yerr == nil || yerr.aborted || !yerr.forbidden() || attempt == maxAttempts {
 			break
 		}
@@ -396,12 +441,12 @@ func download(url string, info *mediaInfo, o downloadOptions) (*downloadResult, 
 			attempt+1, maxAttempts)))
 		l.SetLabel("Получаю новые ссылки...")
 		time.Sleep(time.Duration(attempt) * 2 * time.Second)
-		if cancelled.Load() {
+		if op.aborted() {
 			yerr = &ytError{msg: "отменено", aborted: true}
 			break
 		}
 		if !info.isPlaylist() {
-			fresh, perr := probeOnce(url)
+			fresh, perr := probeOnce(op, url)
 			if perr != nil {
 				yerr = perr
 				if perr.aborted || !perr.forbidden() {
@@ -412,10 +457,27 @@ func download(url string, info *mediaInfo, o downloadOptions) (*downloadResult, 
 			info.infoFile = fresh.infoFile
 		}
 	}
-	l.Stop()
-	setTitle("")
-	os.RemoveAll(tools.work) // недокачанные части, если были
-	os.MkdirAll(tools.work, 0o755)
+	if o.cover && len(res.files) > 0 && (yerr == nil || (info.isPlaylist() && !yerr.aborted)) {
+		for i, f := range res.files {
+			l.Set("Собираю видео с обложкой", -1, fmt.Sprintf("%d из %d", i+1, len(res.files)))
+			rel, _ := filepath.Rel(coverDir, filepath.Dir(f))
+			outDir := filepath.Join(downloadDir, rel)
+			_ = os.MkdirAll(outDir, 0o755)
+			out, err := makeCoverVideo(op, f, outDir)
+			if err != nil {
+				yerr = &ytError{msg: err.Error(), aborted: op.aborted()}
+				res.files = res.files[:i]
+				break
+			}
+			res.files[i] = out
+		}
+	}
+	if live != nil {
+		live.Stop()
+		setTitle("")
+	}
+	os.RemoveAll(work) // недокачанные части, если были
+	os.MkdirAll(work, 0o755)
 
 	if yerr != nil && info.isPlaylist() && len(res.files) > 0 && !yerr.aborted {
 		res.failed = countErrors(yerr.stderr)
@@ -435,7 +497,7 @@ func countErrors(stderr string) int {
 
 // progressView превращает строки шаблона прогресса yt-dlp в строку статуса.
 type progressView struct {
-	live      *liveLine
+	live      progressSink
 	audioOnly bool
 	playlist  bool
 	lastItem  string
@@ -523,49 +585,59 @@ func num(s string) float64 {
 
 // ---------- обновление yt-dlp ----------
 
+// updateYtdlp — консольный вариант: спиннер и сообщение о результате.
 func updateYtdlp() error {
 	l := startLive("Проверка обновлений yt-dlp...")
+	msg, err := updateYtdlpCore(nil)
+	l.Stop()
+	if err == nil {
+		printOK("%s", msg)
+	}
+	return err
+}
+
+// updateYtdlpCore обновляет yt-dlp и возвращает сообщение для пользователя.
+func updateYtdlpCore(op *operation) (string, error) {
 	var out bytes.Buffer
 	cmd := tools.command("--ignore-config", "--encoding", "utf-8", "-U")
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	err := start(cmd)
+	err := start(cmd, op)
 	if err == nil {
-		running.Store(true)
+		running.Add(1)
 		err = cmd.Wait()
-		running.Store(false)
+		running.Add(-1)
 	}
-	l.Stop()
-	if cancelled.Load() {
-		return errors.New("отменено")
+	if op.aborted() {
+		return "", errors.New("отменено")
 	}
 	if err != nil {
 		yerr := newYtError(out.String(), err)
 		text, _ := yerr.explain()
-		return errors.New(text)
+		return "", errors.New(text)
 	}
 
 	verOut, err := tools.command("--version").Output()
 	if err != nil {
-		return fmt.Errorf("не удалось проверить версию: %w", err)
+		return "", fmt.Errorf("не удалось проверить версию: %w", err)
 	}
 	version := strings.TrimSpace(string(verOut))
+	latestYtdlp.Store(version) // только что спросили у GitHub — это последняя
 	if version == tools.ytdlpVersion {
-		printOK("Установлена последняя версия yt-dlp (%s).", version)
-		return nil
+		return "Установлена последняя версия yt-dlp (" + version + ").", nil
 	}
 
 	dir := updateDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	if err := copyFile(tools.ytdlp, filepath.Join(dir, "yt-dlp.exe")); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "yt-dlp.version"), []byte(version), 0o644); err != nil {
-		return err
+		return "", err
 	}
-	printOK("yt-dlp обновлён: %s -> %s", tools.ytdlpVersion, version)
+	msg := "yt-dlp обновлён: " + tools.ytdlpVersion + " → " + version
 	tools.ytdlpVersion = version
-	return nil
+	return msg, nil
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
@@ -36,7 +35,37 @@ var isConsole bool
 // stdinConsole — ввод идёт с клавиатуры (а не из файла/pipe).
 var stdinConsole bool
 
-var stdin = bufio.NewReader(os.Stdin)
+// Ввод читает одна горутина и передаёт строки в канал. Так и обычные вопросы,
+// и команды во время работы бота берут ввод из одного места и не отнимают его друг у друга.
+var (
+	inputOnce  sync.Once
+	inputLines = make(chan string)
+)
+
+func startInput() {
+	inputOnce.Do(func() {
+		go func() {
+			r := bufio.NewReader(os.Stdin)
+			for {
+				line, err := r.ReadString('\n')
+				if line != "" || err == nil {
+					inputLines <- strings.TrimSpace(line)
+				}
+				if err != nil {
+					close(inputLines)
+					return
+				}
+			}
+		}()
+	})
+}
+
+// readLine ждёт строку ввода; ok=false — ввод закрыт.
+func readLine() (string, bool) {
+	startInput()
+	line, ok := <-inputLines
+	return line, ok
+}
 
 func setupConsole() {
 	procSetConsoleOutputCP.Call(65001)
@@ -91,7 +120,14 @@ func consoleWidth() int {
 
 // ---------- оформление ----------
 
-const rule = "============================================="
+// rule — разделитель на всю ширину окна (но не шире 100 символов), чтобы текст не вылезал за него.
+func rule() string {
+	return strings.Repeat("=", ruleWidth())
+}
+
+func ruleWidth() int {
+	return max(45, min(consoleWidth()-1, 100))
+}
 
 func paint(code, s string) string {
 	if !vt {
@@ -106,11 +142,37 @@ func yellow(s string) string { return paint("93", s) }
 func dim(s string) string    { return paint("90", s) }
 func bold(s string) string   { return paint("1", s) }
 
+// header начинает новый экран: очищает консоль и рисует заголовок. Под ним — итог
+// предыдущего действия (строки [OK]/[ОШИБКА], которые пользователь ещё не видел).
 func header(title string) {
-	fmt.Println()
-	fmt.Println(rule)
-	fmt.Println(center(title, utf8.RuneCountInString(rule)))
-	fmt.Println(rule)
+	clearScreen()
+	fmt.Println(rule())
+	fmt.Println(center(title, ruleWidth()))
+	fmt.Println(rule())
+	if len(flash) > 0 {
+		for _, line := range flash {
+			fmt.Println(line)
+		}
+		fmt.Println(rule())
+		flash = nil
+	}
+}
+
+func clearScreen() {
+	if vt && isConsole {
+		fmt.Print("\033[2J\033[3J\033[H") // экран и прокрутка
+	} else {
+		fmt.Println()
+	}
+}
+
+// flash — сообщения о результате, которые нужно показать и на следующем экране,
+// если пользователь не успел их прочитать (между ними не было вопроса).
+var flash []string
+
+func remember(line string) {
+	fmt.Println(line)
+	flash = append(flash, line)
 }
 
 func center(s string, width int) string {
@@ -122,15 +184,15 @@ func center(s string, width int) string {
 }
 
 func printOK(format string, a ...any) {
-	fmt.Println(green("[OK]") + " " + fmt.Sprintf(format, a...))
+	remember(green("[OK]") + " " + fmt.Sprintf(format, a...))
 }
 
 func printErr(format string, a ...any) {
-	fmt.Println(red("[ОШИБКА]") + " " + fmt.Sprintf(format, a...))
+	remember(red("[ОШИБКА]") + " " + fmt.Sprintf(format, a...))
 }
 
 func printHint(format string, a ...any) {
-	fmt.Println(dim("       " + fmt.Sprintf(format, a...)))
+	remember(dim("       " + fmt.Sprintf(format, a...)))
 }
 
 func clearLine() {
@@ -161,11 +223,12 @@ func truncate(s string, max int) string {
 // prompt выводит приглашение и читает строку. При закрытом stdin завершает программу.
 func prompt(text string) string {
 	fmt.Print(text)
-	line, err := stdin.ReadString('\n')
-	if err != nil && (err == io.EOF || line == "") {
+	line, ok := readLine()
+	if !ok {
 		shutdown(0)
 	}
-	return strings.TrimSpace(line)
+	flash = nil // пользователь ответил — значит, всё на экране он видел
+	return line
 }
 
 // flushInput выбрасывает всё, что пользователь успел нажать, пока программа была занята
@@ -175,7 +238,16 @@ func flushInput() {
 		return
 	}
 	procFlushConsoleInputBuffer.Call(os.Stdin.Fd())
-	stdin.Reset(os.Stdin)
+	for {
+		select {
+		case _, ok := <-inputLines: // строка, которую горутина ввода уже успела прочитать
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
 }
 
 // eraseInputLine стирает строку, на которой пользователь только что нажал Enter,

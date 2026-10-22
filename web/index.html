@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0d0d0d">
+<title>Phonker Loader</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="logo">PHONKER<br>LOADER <span class="ver" id="version"></span></div>
+  <nav id="nav">
+    <button data-tab="download" class="active"><span class="key">1</span>Скачать</button>
+    <button data-tab="bot"><span class="key">2</span>Бот<span class="badge" id="bot-badge" hidden></span></button>
+    <button data-tab="history"><span class="key">3</span>История</button>
+    <button data-tab="stats"><span class="key">4</span>Статистика</button>
+    <button data-tab="settings"><span class="key">5</span>Настройки</button>
+    <button data-tab="help"><span class="key">6</span>Справка</button>
+  </nav>
+  <div class="status" id="status"></div>
+</aside>
+
+<main>
+  <div id="crash" class="page-wide"></div>
+
+  <!-- СКАЧАТЬ -->
+  <section id="tab-download" class="tab active">
+    <header class="page-head">
+      <h1>Скачать</h1>
+      <p>Вставь ссылку — YouTube, TikTok, VK, SoundCloud, Twitch и сотни других сайтов. Ctrl+V работает из любого места окна.</p>
+    </header>
+    <form class="prompt" id="probe-form" autocomplete="off">
+      <span class="caret">›</span>
+      <input id="url" placeholder="https://..." spellcheck="false" autofocus>
+      <button class="btn primary" type="submit">Найти</button>
+    </form>
+    <div id="downloads"></div>
+    <div id="recent"></div>
+  </section>
+
+  <!-- БОТ -->
+  <section id="tab-bot" class="tab">
+    <header class="page-head">
+      <h1>Telegram-бот</h1>
+      <p>Друзья присылают ссылку — этот компьютер скачивает видео и отправляет его в чат.</p>
+    </header>
+    <nav class="seg" id="bot-subtabs">
+      <button data-sub="panel" class="active">Панель</button>
+      <button data-sub="friends">Друзья</button>
+      <button data-sub="journal">Журнал</button>
+      <button data-sub="botsettings">Настройки бота</button>
+    </nav>
+    <div id="bot-panel" class="sub active"></div>
+    <div id="bot-friends" class="sub"></div>
+    <div id="bot-journal" class="sub"></div>
+    <div id="bot-botsettings" class="sub"></div>
+  </section>
+
+  <!-- ИСТОРИЯ -->
+  <section id="tab-history" class="tab">
+    <header class="page-head">
+      <h1>История</h1>
+      <p>Всё, что ты скачивал в этой программе.</p>
+    </header>
+    <input id="history-filter" class="search" placeholder="Поиск по названию или ссылке" spellcheck="false">
+    <div id="history"></div>
+  </section>
+
+  <!-- СТАТИСТИКА -->
+  <section id="tab-stats" class="tab">
+    <header class="page-head">
+      <h1>Статистика</h1>
+      <p>Сколько скачано и сколько это весит — сам и через бота.</p>
+    </header>
+    <div id="stats"></div>
+  </section>
+
+  <!-- НАСТРОЙКИ -->
+  <section id="tab-settings" class="tab">
+    <header class="page-head">
+      <h1>Настройки</h1>
+      <p>Обычно ничего менять не нужно — всё подхватывается само.</p>
+    </header>
+    <div id="settings"></div>
+  </section>
+
+  <!-- СПРАВКА -->
+  <section id="tab-help" class="tab">
+    <header class="page-head">
+      <h1>Справка</h1>
+      <p>Коротко обо всём. Подробнее — в README на GitHub.</p>
+    </header>
+    <div class="card">
+      <h2>Скачать видео</h2>
+      <p>Вставь ссылку (Ctrl+V из любого места окна), выбери формат — первый всегда лучшее качество — и нажми «Скачать».
+        Нужен кусок видео — заполни «с» и «до», например <code>1:15</code> и <code>2:40</code>.</p>
+      <p>Музыка с SoundCloud, Bandcamp, Яндекс Музыки и YouTube Music — сразу MP3 или MP4 с обложкой трека.
+        Ссылка на плейлист скачивает его целиком в отдельную папку.</p>
+    </div>
+    <div class="card">
+      <h2>Если не качается</h2>
+      <table class="plain">
+        <tr><td>Нет соединения</td><td>Включи VPN/прокси. v2rayN и Happ программа подхватывает сама.</td></tr>
+        <tr><td>Сайт изменил защиту</td><td>Настройки → yt-dlp → «Обновить». Строка состояния слева подскажет, когда выйдет новая версия.</td></tr>
+        <tr><td>Требуется вход</td><td>18+, «я не бот», приватное видео — Настройки → Cookies.</td></tr>
+        <tr><td>Ошибка 403</td><td>Программа сама делает 3 попытки. Подожди пару минут или смени сервер VPN.</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Telegram-бот для друзей</h2>
+      <ol>
+        <li>В Telegram открой <b>@BotFather</b> → <code>/newbot</code> → получи токен.</li>
+        <li>Настройки → «Включить раздел «Бот»» → вставь токен.</li>
+        <li>Бот → «Запустить». Отправь друзьям ссылку на бота.</li>
+        <li>Новый друг пишет боту — появится запрос: «Разрешить» или «Отказать». Ответить можно и позже.</li>
+      </ol>
+      <p>Раздел «Бот» включается в Настройках — обычному пользователю он не нужен, поэтому скрыт.
+        У каждого друга вверху чата закреплён статус 🟢 Online / 🔴 Offline. Бот работает, пока открыто это окно.</p>
+    </div>
+    <div class="card">
+      <h2>Полезное</h2>
+      <table class="plain">
+        <tr><td>Ctrl+1…6</td><td>переключить раздел</td></tr>
+        <tr><td>Ctrl+V</td><td>вставить ссылку и сразу начать поиск</td></tr>
+      </table>
+      <p>Делиться программой можно: отдавай только exe, без <code>settings.json</code> и <code>bot_data.json</code>
+        (в них токен бота и данные друзей). Старый консольный интерфейс: запусти exe с параметром <code>--console</code>.</p>
+      <p class="dim">Создатель: <a href="#" data-url="https://t.me/bananas_ananass">@bananas_ananass</a></p>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

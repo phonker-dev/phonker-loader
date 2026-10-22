@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -198,16 +197,33 @@ func (t *toolset) command(args ...string) *exec.Cmd {
 	cmd := exec.Command(t.ytdlp, args...)
 	cmd.Env = t.env()
 	cmd.Dir = t.dir
+	hideWindow(cmd)
 	return cmd
 }
 
+// hideWindow: в оконном режиме у программы нет консоли, и без этого флага
+// каждый запуск yt-dlp или ffmpeg открывал бы чёрное окно.
+func hideWindow(cmd *exec.Cmd) {
+	if guiMode {
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow, HideWindow: true}
+	}
+}
+
+const createNoWindow = 0x08000000
+
 // start запускает процесс и привязывает его к job-объекту, чтобы при закрытии
 // программы (в том числе крестиком) yt-dlp, ffmpeg и deno гарантированно завершились.
-func start(cmd *exec.Cmd) error {
+// op — операция (загрузка), чьи процессы можно отменить отдельно от остальных.
+func start(cmd *exec.Cmd, op ...*operation) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	jobs.assign(cmd.Process.Pid)
+	for _, o := range op {
+		if o != nil {
+			o.job.assign(cmd.Process.Pid)
+		}
+	}
 	return nil
 }
 
@@ -296,22 +312,6 @@ func updatedYtdlp() (path, version string) {
 	return path, strings.TrimSpace(string(v))
 }
 
-// ytdlpAge возвращает возраст версии yt-dlp в днях (версии имеют вид 2026.03.17).
-func ytdlpAge(version string) int {
-	parts := strings.Split(version, ".")
-	if len(parts) < 3 {
-		return 0
-	}
-	y, _ := strconv.Atoi(parts[0])
-	m, _ := strconv.Atoi(parts[1])
-	d, _ := strconv.Atoi(parts[2])
-	if y == 0 {
-		return 0
-	}
-	released := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.Local)
-	return int(time.Since(released).Hours() / 24)
-}
-
 // ---------- job object ----------
 
 var (
@@ -358,13 +358,19 @@ type jobObject struct{ h uintptr }
 
 var jobs jobObject
 
-func (j *jobObject) init() {
+func (j *jobObject) init() { j.create(true) }
+
+// create создаёт job; killOnClose — завершить все процессы, когда закроется последний дескриптор
+// (у общего job программы). Job отдельной загрузки нужен только чтобы отменить её процессы.
+func (j *jobObject) create(killOnClose bool) {
 	h, _, _ := procCreateJobObjectW.Call(0, 0)
 	if h == 0 {
 		return
 	}
 	var info jobObjectExtendedLimitInformationT
-	info.BasicLimitInformation.LimitFlags = jobObjectLimitKillOnJobClose
+	if killOnClose {
+		info.BasicLimitInformation.LimitFlags = jobObjectLimitKillOnJobClose
+	}
 	r, _, _ := procSetInformationJobObject.Call(h, jobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info))
 	if r == 0 {
@@ -375,7 +381,7 @@ func (j *jobObject) init() {
 }
 
 func (j *jobObject) assign(pid int) {
-	if j.h == 0 {
+	if j == nil || j.h == 0 {
 		return
 	}
 	ph, err := syscall.OpenProcess(processSetQuota|processTerminate, false, uint32(pid))
@@ -387,7 +393,14 @@ func (j *jobObject) assign(pid int) {
 }
 
 func (j *jobObject) terminate() {
-	if j.h != 0 {
+	if j != nil && j.h != 0 {
 		procTerminateJobObject.Call(j.h, 1)
+	}
+}
+
+func (j *jobObject) close() {
+	if j != nil && j.h != 0 {
+		syscall.CloseHandle(syscall.Handle(j.h))
+		j.h = 0
 	}
 }

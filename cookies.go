@@ -16,37 +16,9 @@ import (
 // программа читает его копию и никогда не изменяет оригинал.
 //
 // Где ищется файл (по порядку):
-//  1. путь, сохранённый через пункт меню «Cookies» (settings.json рядом с exe);
+//  1. путь, сохранённый в «Настройки → Cookies» (settings.json рядом с exe);
 //  2. cookies.txt рядом с exe.
 // Без файла программа просто работает без входа в аккаунт.
-
-type settings struct {
-	Cookies string `json:"cookies,omitempty"`
-}
-
-var cfg settings
-
-func settingsPath() string { return filepath.Join(appDir, "settings.json") }
-
-func loadSettings() {
-	data, err := os.ReadFile(settingsPath())
-	if err == nil {
-		_ = json.Unmarshal(data, &cfg)
-	}
-}
-
-// saveSettings пишет settings.json, а если сохранять нечего — удаляет его.
-func saveSettings() error {
-	if cfg == (settings{}) {
-		err := os.Remove(settingsPath())
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	data, _ := json.MarshalIndent(cfg, "", "  ")
-	return os.WriteFile(settingsPath(), data, 0o644)
-}
 
 // cookiesSource возвращает путь к файлу cookies пользователя или "", если его нет.
 func cookiesSource() string {
@@ -172,7 +144,7 @@ func cookiesMenu() {
 	fmt.Println(dim(" Как получить: в браузере, где ты вошёл в YouTube, установи расширение"))
 	fmt.Println(dim(" «Get cookies.txt LOCALLY», открой youtube.com и нажми Export."))
 	fmt.Println(dim(" Файл никуда не отправляется — его читает только yt-dlp на этом ПК."))
-	fmt.Println(rule)
+	fmt.Println(rule())
 
 	if src := cookiesSource(); src != "" {
 		state := green("используется")

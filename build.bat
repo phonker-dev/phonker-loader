@@ -3,7 +3,8 @@ setlocal
 cd /d "%~dp0"
 
 rem Build: packs tools\*.exe into assets\*.gz, runs tests, compiles dist\PhonkerLoader_vX.exe.
-set VERSION=1.1.0
+rem The version is taken from the VERSION file. -H windowsgui: the window mode needs no console.
+set /p VERSION=<VERSION
 
 echo [1/3] Packing tools...
 go run ./cmd/pack || goto :fail
@@ -16,7 +17,7 @@ echo [2/3] Running tests...
 go test . || goto :fail
 
 echo [3/3] Building dist\PhonkerLoader_v%VERSION%.exe...
-go build -trimpath -ldflags "-s -w -X main.appVersion=%VERSION%" -o "dist\PhonkerLoader_v%VERSION%.exe" . || goto :fail
+go build -trimpath -ldflags "-s -w -H windowsgui -X main.appVersion=%VERSION%" -o "dist\PhonkerLoader_v%VERSION%.exe" . || goto :fail
 
 rmdir /s /q assets
 echo.

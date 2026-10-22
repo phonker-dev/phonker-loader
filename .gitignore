@@ -1,0 +1,13 @@
+# Утилиты для сборки (каждая ~100 МБ, GitHub не принимает файлы больше 100 МБ)
+/tools/*.exe
+# Готовый exe выкладывается в GitHub Releases, а не в код
+/dist/
+# Временные файлы сборки
+/assets/
+
+# Личные данные (если запускать exe прямо из папки проекта)
+cookies.txt
+settings.json
+Downloads/
+history.json
+bot_data.json

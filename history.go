@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
 
-// Формат совместим с history.json прошлых версий (поле file добавлено).
+// Формат совместим с history.json прошлых версий (поля file и size добавлены позже).
 type historyEntry struct {
 	ID    int    `json:"id"`
 	Date  string `json:"date"`
@@ -17,6 +18,30 @@ type historyEntry struct {
 	Title string `json:"title"`
 	URL   string `json:"url"`
 	File  string `json:"file,omitempty"`
+	Size  int64  `json:"size,omitempty"`
+}
+
+func (e historyEntry) when() time.Time {
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", e.Date+" "+e.Time, time.Local)
+	if err != nil {
+		t, _ = time.ParseInLocation("2006-01-02", e.Date, time.Local)
+	}
+	return t
+}
+
+func (e historyEntry) audio() bool {
+	return strings.EqualFold(filepath.Ext(e.File), ".mp3")
+}
+
+// size — размер файла; у записей старых версий берётся с диска, если файл ещё лежит в папке.
+func (e historyEntry) size() int64 {
+	if e.Size > 0 || e.File == "" {
+		return e.Size
+	}
+	if st, err := os.Stat(filepath.Join(downloadDir, e.File)); err == nil {
+		return st.Size()
+	}
+	return 0
 }
 
 func historyPath() string { return filepath.Join(downloadDir, "history.json") }
@@ -37,6 +62,10 @@ func appendHistory(title, url, file string) {
 	if len(list) > 0 {
 		id = list[len(list)-1].ID + 1
 	}
+	var size int64
+	if st, err := os.Stat(file); file != "" && err == nil {
+		size = st.Size()
+	}
 	now := time.Now()
 	list = append(list, historyEntry{
 		ID:    id,
@@ -45,6 +74,7 @@ func appendHistory(title, url, file string) {
 		Title: title,
 		URL:   url,
 		File:  filepath.Base(file),
+		Size:  size,
 	})
 
 	var buf bytes.Buffer
