@@ -13,10 +13,13 @@ import (
 	"time"
 )
 
-// bot_data.json рядом с exe: статистика по друзьям и журнал загрузок бота.
-// Друзья видят только свою часть (/history), владелец — всё (меню бота).
+// bot_data.json рядом с exe: статистика пользователей бота, журнал загрузок и журнал событий.
+// Пользователь видит только свои загрузки («Мои загрузки»), владелец — всё.
 
-const botLogLimit = 2000 // сколько последних загрузок хранить
+const (
+	botLogLimit    = 2000 // сколько последних загрузок хранить
+	botEventsLimit = 1000 // сколько последних событий хранить
+)
 
 type userStats struct {
 	ID        int64     `json:"id"`
@@ -55,8 +58,21 @@ type botStore struct {
 	Denied   []int64   `json:"denied,omitempty"` // отказано — повторные запросы не беспокоят
 	Notify   []int64   `json:"notify,omitempty"` // одобрены без бота — сообщить при запуске
 
-	// Закреплённое сообщение «бот в сети / не в сети» в чате каждого друга: id пользователя → id сообщения.
+	// Закреплённое сообщение Online / Offline в чате каждого пользователя: id пользователя → id сообщения.
 	Pins map[int64]int64 `json:"pins,omitempty"`
+
+	// Журнал событий бота — переживает перезапуски программы.
+	Events      []storedEvent `json:"events,omitempty"`
+	NextEventID int64         `json:"next_event_id,omitempty"`
+}
+
+type storedEvent struct {
+	ID     int64     `json:"id"`
+	Time   time.Time `json:"time"`
+	Text   string    `json:"text"`
+	Status string    `json:"status,omitempty"`
+	Kind   string    `json:"kind,omitempty"` // ok, err, info
+
 }
 
 var botDB = &botStore{Users: map[int64]*userStats{}}
@@ -258,6 +274,43 @@ func cleanStoredName(s string) string {
 	return cleanName(s)
 }
 
+// addEvent сохраняет событие и возвращает его номер (чтобы потом записать итог).
+func (s *botStore) addEvent(text string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.NextEventID++
+	s.Events = append(s.Events, storedEvent{ID: s.NextEventID, Time: time.Now(), Text: text})
+	if len(s.Events) > botEventsLimit {
+		s.Events = s.Events[len(s.Events)-botEventsLimit:]
+	}
+	s.save()
+	return s.NextEventID
+}
+
+// setEventStatus записывает итог события («OK 12 МБ», «ошибка: …»).
+func (s *botStore) setEventStatus(id int64, status, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.Events) - 1; i >= 0; i-- {
+		if s.Events[i].ID == id {
+			s.Events[i].Status, s.Events[i].Kind = status, kind
+			s.save()
+			return
+		}
+	}
+}
+
+// events — последние n событий, новые первыми.
+func (s *botStore) events(n int) []storedEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]storedEvent, 0, min(n, len(s.Events)))
+	for i := len(s.Events) - 1; i >= 0 && len(out) < n; i-- {
+		out = append(out, s.Events[i])
+	}
+	return out
+}
+
 func (s *botStore) entry(id int64) (logEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,6 +332,16 @@ func (s *botStore) history(userID int64, n int, onlyOK bool) []logEntry {
 		if (userID == 0 || e.UserID == userID) && (!onlyOK || e.OK) {
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+func (s *botStore) allUsers() []userStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]userStats, 0, len(s.Users))
+	for _, st := range s.Users {
+		out = append(out, *st)
 	}
 	return out
 }

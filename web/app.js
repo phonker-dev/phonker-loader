@@ -14,7 +14,7 @@ let tab = "download";
 let botSub = "panel";
 const cardUI = {};   // выбранный формат и фрагмент каждой карточки — переживают перерисовку
 const rendered = {}; // что уже нарисовано: пока данные те же, поля ввода не трогаем
-const lists = { history: null, stats: null, friends: null, journal: null };
+const lists = { history: null, stats: null, users: null, journal: null };
 
 // ---------- запросы ----------
 
@@ -113,7 +113,7 @@ async function refresh() {
   refreshTimer = setTimeout(refresh, document.hidden ? 3000 : 900);
 }
 
-// Списки (история, статистика, друзья, журнал) обновляются реже.
+// Списки (история, статистика, пользователи, журнал) обновляются реже.
 let listsAt = 0;
 async function loadLists(force) {
   if (!force && Date.now() - listsAt < 5000) return;
@@ -121,7 +121,7 @@ async function loadLists(force) {
   try {
     if (tab === "history" || tab === "download") lists.history = (await api("history")) || [];
     if (tab === "stats") lists.stats = await api("stats");
-    if (tab === "bot" && botSub === "friends") lists.friends = (await api("friends")) || [];
+    if (tab === "bot" && botSub === "users") lists.users = (await api("users")) || [];
     if (tab === "bot" && botSub === "journal") lists.journal = (await api("journal")) || [];
     render();
   } catch (_) { /* в следующий раз */ }
@@ -335,7 +335,9 @@ function renderBot() {
       setHTML(root, "bot-panel", botPanelHTML(b));
     }
   }
-  if (botSub === "friends") setHTML($("#bot-friends"), "bot-friends", friendsHTML());
+  if (botSub === "users" && !(document.activeElement && document.activeElement.closest && document.activeElement.closest("summary"))) {
+    setHTML($("#bot-users"), "bot-users", usersHTML());
+  }
   if (botSub === "journal") setHTML($("#bot-journal"), "bot-journal", journalHTML());
   if (botSub === "botsettings") {
     const root = $("#bot-botsettings");
@@ -363,7 +365,7 @@ function botPanelHTML(b) {
   let big, buttons;
   if (b.running) {
     big = `<div><div class="big on"><span class="dot"></span>ONLINE</div>
-      <div class="dim" style="margin-top:4px"><a href="#" data-url="https://t.me/${esc(b.name)}">t.me/${esc(b.name)}</a> — ссылка для друзей</div></div>`;
+      <div class="dim" style="margin-top:4px"><a href="#" data-url="https://t.me/${esc(b.name)}">t.me/${esc(b.name)}</a> — ссылка на бота</div></div>`;
     buttons = `<button class="btn" data-action="bot-restart">Перезапустить</button>
       <button class="btn danger" data-action="bot-stop">Остановить</button>`;
   } else if (b.starting || b.stopping) {
@@ -371,13 +373,13 @@ function botPanelHTML(b) {
     buttons = "";
   } else {
     big = `<div><div class="big off"><span class="dot"></span>OFFLINE</div>
-      <div class="dim" style="margin-top:4px">У друзей в чате закреплено 🔴 Offline</div></div>`;
+      <div class="dim" style="margin-top:4px">У пользователей закреплён статус 🔴 Offline</div></div>`;
     buttons = `<button class="btn primary" data-action="bot-start">Запустить</button>`;
   }
   const err = b.error && !b.running ? `<div class="hint err">${esc(b.error)}</div>` : "";
 
   const tiles = `<div class="tiles">
-      <div class="tile"><div class="n">${b.friends}</div><div class="l">друзей</div></div>
+      <div class="tile"><div class="n">${b.users}</div><div class="l">пользователей</div></div>
       <div class="tile"><div class="n">${b.running ? b.sent : "—"}</div><div class="l">отправлено</div></div>
       <div class="tile"><div class="n">${b.running ? esc(b.bytes) : "—"}</div><div class="l">объём</div></div>
       <div class="tile"><div class="n">${b.running ? b.active : "—"}</div><div class="l">качается сейчас</div></div>
@@ -385,60 +387,85 @@ function botPanelHTML(b) {
 
   let requests = "";
   if (b.requests && b.requests.length) {
-    requests = `<div class="card attention"><h2>Просят доступ · ${b.requests.length}</h2>` +
+    requests = `<div class="card attention"><h2>Запросы на доступ · ${b.requests.length}</h2>` +
       b.requests.map((r) => `<div class="request"><span class="name" title="${esc(r.name)}">${esc(r.name)}</span>
         <span class="dim">${esc(r.when)}</span>
         <button class="btn primary small" data-action="allow" data-id="${r.id}">Разрешить</button>
         <button class="btn danger small" data-action="deny" data-id="${r.id}">Отказать</button></div>`).join("") +
-      (b.running ? "" : `<div class="hint">Бот выключен: друг получит «доступ открыт», когда ты его запустишь.</div>`) +
+      (b.running ? "" : `<div class="hint">Бот выключен: пользователь получит уведомление о доступе при следующем запуске.</div>`) +
       `</div>`;
   }
 
-  let events = "";
-  if (b.running) {
-    const list = b.events && b.events.length
-      ? b.events.map((e) => `<div class="ev"><span class="t">${esc(e.time)}</span>
-          <span class="x">${esc(e.text)}<span class="s ${e.kind === "ok" ? "ok" : e.kind === "err" ? "err" : "dim"}">${esc(e.status)}</span></span></div>`).join("")
-      : `<div class="empty">Пока тихо. Когда друзья пришлют ссылку — увидишь здесь.</div>`;
-    events = `<div class="card"><h2>События</h2><div class="log">${list}</div></div>`;
-  }
+  // Журнал событий хранится на диске: виден и после перезапуска, и при выключенном боте.
+  const evList = b.events && b.events.length
+    ? b.events.map((e) => `<div class="ev"><span class="t">${esc(e.time)}</span>
+        <span class="x">${esc(e.text)}<span class="s ${e.kind === "ok" ? "ok" : e.kind === "err" ? "err" : "dim"}">${esc(e.status)}</span></span></div>`).join("")
+    : `<div class="empty">Событий пока нет.</div>`;
+  const events = `<div class="card"><h2>Журнал событий</h2><div class="log">${evList}</div></div>`;
   return `<div class="card"><div class="botstate">${big}<div class="row">${buttons}</div></div>${err}</div>
     ${requests}${tiles}${events}`;
 }
 
-function friendsHTML() {
-  const list = lists.friends;
-  if (!list) return `<div class="empty"><span class="spinner"></span> Загружаю...</div>`;
-  if (!list.length) return `<div class="card"><div class="empty">Друзей пока нет. Пусть друг напишет боту, пока он запущен, — на панели появится запрос.</div></div>`;
-  const rows = list.map((f) => `<tr class="friend">
-      <td><div class="name" title="${esc(f.name)}">${esc(f.name)}</div>
-        <div class="sub-line">${esc([f.lang, f.premium ? "Premium" : "", f.firstSeen ? "с " + f.firstSeen : "", f.sites].filter(Boolean).join(" · "))}</div>
-        ${(f.recent || []).slice(0, 3).map((r) => `<div class="sub-line">· ${esc(r)}</div>`).join("")}</td>
-      <td class="num"><b>${f.downloads}</b>${f.failed ? `<div class="err">ошибок ${f.failed}</div>` : ""}</td>
-      <td class="num">${esc(f.bytes || "—")}</td>
-      <td class="nowrap dim">${esc(f.lastSeen || "—")}</td>
-      <td class="num"><button class="btn ghost small" data-action="remove-friend" data-id="${f.id}" data-name="${esc(f.name)}">убрать доступ</button></td>
-    </tr>`).join("");
-  return `<div class="card"><table>
-    <thead><tr><th>Кто</th><th class="num">Загрузок</th><th class="num">Объём</th><th>Был</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+// Пользователи бота: у каждого раскрывающаяся история со всеми ссылками, которые он присылал.
+const openUsers = new Set(); // какие истории раскрыты — переживает перерисовку
+document.addEventListener("toggle", (e) => {
+  const d = e.target;
+  if (!d.matches || !d.matches("details[data-user]")) return;
+  if (d.open) openUsers.add(d.dataset.user); else openUsers.delete(d.dataset.user);
+  rendered["bot-users"] = null;
+}, true);
+
+function linkRow(l) {
+  const what = l.ok ? (l.title || l.url) : `ошибка: ${l.error || ""}`;
+  return `<div class="link">
+    <span class="t">${esc(l.time)}</span>
+    <span class="w"><div class="title ${l.ok ? "" : "err"}" title="${esc(what)}">${l.audio ? `<span class="dim">[mp3]</span> ` : ""}${esc(what)}</div>
+      <div class="u"><a href="#" data-url="${esc(l.url)}">${esc(l.url)}</a></div></span>
+    <span class="s">${esc(l.size || "")}</span>
+  </div>`;
 }
 
+function usersHTML() {
+  const list = lists.users;
+  if (!list) return `<div class="empty"><span class="spinner"></span> Загружаю...</div>`;
+  if (!list.length) return `<div class="card"><div class="empty">Пользователей пока нет. Когда кто-то напишет боту, на панели появится запрос на доступ.</div></div>`;
+  const items = list.map((u) => {
+    const meta = [u.lang, u.premium ? "Premium" : "", u.firstSeen ? "с " + u.firstSeen : "", u.sites].filter(Boolean).join(" · ");
+    const body = u.links.length
+      ? `<div class="count">Ссылок: ${u.links.length} · новые сверху</div><div class="links">${u.links.map(linkRow).join("")}</div>`
+      : `<div class="empty" style="padding:8px 0">Ссылок пока не присылал.</div>`;
+    return `<details class="user" data-user="${u.id}" ${openUsers.has(String(u.id)) ? "open" : ""}>
+      <summary>
+        <span class="chev">›</span>
+        <span class="who"><span class="name" title="${esc(u.name)}">${esc(u.name || "id " + u.id)}</span>${u.access ? "" : `<span class="tag">доступ убран</span>`}
+          <span class="sub-line">${esc(meta)}</span></span>
+        <span class="stat"><b>${u.downloads}</b>${u.failed ? ` <span class="err">/ ${u.failed} ош.</span>` : ""}</span>
+        <span class="stat dim">${esc(u.bytes || "—")}</span>
+        <span class="stat dim">${esc(u.lastSeen || "—")}</span>
+        ${u.access
+          ? `<button class="btn ghost small" data-action="remove-user" data-id="${u.id}" data-name="${esc(u.name)}">убрать доступ</button>`
+          : `<button class="btn small" data-action="grant-user" data-id="${u.id}">вернуть доступ</button>`}
+      </summary>
+      <div class="user-body">${body}</div>
+    </details>`;
+  }).join("");
+  return `<div class="users-head"><span></span><span>Пользователь</span><span>Загрузок</span><span>Объём</span><span>Был</span><span></span></div>${items}`;
+}
 function journalHTML() {
   const list = lists.journal;
   if (!list) return `<div class="empty"><span class="spinner"></span> Загружаю...</div>`;
-  if (!list.length) return `<div class="card"><div class="empty">Пока пусто — здесь будут загрузки друзей через бота.</div></div>`;
+  if (!list.length) return `<div class="card"><div class="empty">Журнал загрузок пуст.</div></div>`;
   const rows = list.map((j) => `<tr>
       <td class="nowrap dim">${esc(j.time)}</td>
       <td class="nowrap"><div class="clip" style="max-width:180px">${esc(j.who || "—")}</div></td>
-      <td><div class="clip">${j.ok ? "" : `<span class="err">ошибка: </span>`}${j.audio ? `<span class="dim">[mp3]</span> ` : ""}${esc(j.what || j.url)}</div></td>
+      <td><div class="clip ${j.ok ? "" : "err"}">${j.ok ? "" : "ошибка: "}${j.audio ? `<span class="dim">[mp3]</span> ` : ""}${esc(j.what || j.url)}</div>
+        <div class="clip"><a href="#" data-url="${esc(j.url)}" class="dim" style="font-size:12px">${esc(j.url)}</a></div></td>
       <td class="num dim">${esc(j.size || "")}</td>
     </tr>`).join("");
   return `<div class="card"><table>
-    <thead><tr><th>Когда</th><th>Кто</th><th>Что</th><th class="num">Размер</th></tr></thead>
+    <thead><tr><th>Когда</th><th>Пользователь</th><th>Что и откуда</th><th class="num">Размер</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
-
 function botSettingsHTML(b) {
   const auto = { on: "включён", off: "выключен", other: "включён для другого расположения программы — включи заново" }[b.autostart];
   return `<div class="card">
@@ -500,7 +527,7 @@ function renderStats() {
     <div class="card"><div class="kv">
       <span>Итого</span><span>${esc(s.total)} <span class="dim">· видео ${s.video}, mp3 ${s.audio}</span></span>
       <span>Сайты</span><span>${esc((s.sites || []).join(", "))}</span>
-      ${s.friends && s.friends.length ? `<span>Друзья</span><span>${esc(s.friends.join(", "))}</span>` : ""}
+      ${s.users && s.users.length ? `<span>Пользователи бота</span><span>${esc(s.users.join(", "))}</span>` : ""}
       <span>Считается с</span><span>${esc(s.since)}</span>
     </div>${s.unknown ? `<div class="hint">У ${s.unknown} старых загрузок размер неизвестен: файлов уже нет в папке.</div>` : ""}</div>`);
 }
@@ -548,9 +575,9 @@ function renderSettings() {
       <div class="hint">YouTube регулярно меняет защиту. Если видео перестали качаться — обнови.</div>
     </div>
     <div class="card">
-      <h2>Telegram-бот для друзей</h2>
-      <p>Друзья присылают ссылку боту — этот компьютер скачивает видео и отправляет им в чат. Обычно не нужен,
-        поэтому раздел скрыт.</p>
+      <h2>Telegram-бот</h2>
+      <p>Пользователи присылают боту ссылку — программа скачивает файл и отправляет его в чат.
+        Для обычной работы не нужен, поэтому раздел скрыт.</p>
       <div class="actions">${state.bot.visible
         ? (state.bot.hasToken ? `<span class="dim" style="align-self:center">Раздел включён: бот настроен.</span>`
           : `<button class="btn ghost" data-action="showbot-off">Скрыть раздел «Бот»</button>`)
@@ -595,13 +622,16 @@ document.addEventListener("click", async (e) => {
     case "open-downloads": return act("open", { file: "" });
 
     case "bot-start": return act("bot/start", {});
-    case "bot-stop": return act("bot/stop", {}, "Бот останавливается — у друзей будет 🔴 Offline");
+    case "bot-stop": return act("bot/stop", {}, "Бот останавливается — у пользователей будет статус 🔴 Offline");
     case "bot-restart": return act("bot/restart", {}, "Перезапускаю бота...");
     case "allow": return act("bot/request", { id, allow: true }, "Доступ выдан");
     case "deny": return act("bot/request", { id, allow: false }, "В доступе отказано");
-    case "remove-friend":
+    case "remove-user":
       if (!confirm(`Убрать доступ у ${el.dataset.name}?`)) return;
       await act("bot/remove", { id }, "Доступ убран");
+      return loadLists(true);
+    case "grant-user":
+      await act("bot/grant", { id }, "Доступ выдан");
       return loadLists(true);
     case "save-token": {
       const token = $("#token-input").value.trim();

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"log"
 	"net"
@@ -41,11 +42,20 @@ var (
 // guiInfoPath — адрес и ключ окна для второй копии программы. Служебный режим проверки
 // (--no-window) пишет свой файл и не мешает настоящей запущенной программе.
 func guiInfoPath() string {
-	name := "gui.json"
+	name := "gui-" + instanceKey() + ".json"
 	if hasFlag("--no-window") {
 		name = "gui-test.json"
 	}
 	return filepath.Join(os.TempDir(), sessionRootName, name)
+}
+
+// instanceKey — метка папки программы. Одна копия на папку: второй запуск из той же папки
+// показывает уже открытое окно, а копии из разных папок (например, своя с ботом и чистая
+// «как у пользователя») работают одновременно — у них разные настройки и данные.
+func instanceKey() string {
+	h := fnv.New32a()
+	h.Write([]byte(strings.ToLower(appDir)))
+	return fmt.Sprintf("%08x", h.Sum32())
 }
 
 func runGUI() {
@@ -204,7 +214,7 @@ var procCreateMutexW = kernel32.NewProc("CreateMutexW")
 const errorAlreadyExists = 183
 
 func acquireInstance() bool {
-	name, _ := syscall.UTF16PtrFromString(`Local\PhonkerLoaderWindow`)
+	name, _ := syscall.UTF16PtrFromString(`Local\PhonkerLoaderWindow-` + instanceKey())
 	h, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	if h == 0 {
 		return true // не получилось проверить — запускаемся как обычно

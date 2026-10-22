@@ -132,7 +132,7 @@ func guiAPI() http.Handler {
 	// списки
 	handle("/api/history", func(*http.Request) (any, error) { return guiHistory(), nil })
 	handle("/api/stats", func(*http.Request) (any, error) { return buildStats(), nil })
-	handle("/api/friends", func(*http.Request) (any, error) { return guiFriends(), nil })
+	handle("/api/users", func(*http.Request) (any, error) { return guiUsers(), nil })
 	handle("/api/journal", func(*http.Request) (any, error) { return guiJournal(), nil })
 
 	// бот
@@ -167,6 +167,21 @@ func guiAPI() http.Handler {
 			}
 		}
 		return nil, nil
+	})
+	handle("/api/bot/grant", func(r *http.Request) (any, error) {
+		var p struct{ ID int64 }
+		if err := readJSON(r, &p); err != nil {
+			return nil, err
+		}
+		name := ""
+		if st, ok := botDB.user(p.ID); ok {
+			name = st.Name
+		}
+		if b := currentBot(); b != nil {
+			b.allow(botUser{ID: p.ID, Name: name})
+			return nil, nil
+		}
+		return nil, grantAccess(botUser{ID: p.ID, Name: name}, true)
 	})
 	handle("/api/bot/remove", func(r *http.Request) (any, error) {
 		var p struct{ ID int64 }
@@ -337,7 +352,7 @@ type botState struct {
 	Stopping  bool          `json:"stopping"`
 	Error     string        `json:"error"`
 	Name      string        `json:"name"`
-	Friends   int           `json:"friends"`
+	Users     int           `json:"users"`
 	Sent      int64         `json:"sent"`
 	Bytes     string        `json:"bytes"`
 	Active    int32         `json:"active"`
@@ -698,7 +713,7 @@ func guiStopBot(offline bool) {
 }
 
 func guiBotState() botState {
-	st := botState{Visible: botVisible(), HasToken: cfg.BotToken != "", Friends: len(friendsCopy()), Autostart: autostartStatus()}
+	st := botState{Visible: botVisible(), HasToken: cfg.BotToken != "", Users: len(friendsCopy()), Autostart: autostartStatus()}
 	if cfg.BotToken != "" {
 		st.Token = maskToken(cfg.BotToken)
 	}
@@ -710,8 +725,8 @@ func guiBotState() botState {
 		st.Running, st.Name = true, b.name
 		st.Sent, st.Bytes = b.sessionOK.Load(), formatBytes(float64(b.sessionBytes.Load()))
 		st.Active = b.active.Load()
-		st.Events = b.eventsView()
 	}
+	st.Events = eventsView(b, 300) // журнал событий за всё время, а не только за этот запуск
 	for _, u := range botDB.requests() {
 		when := ""
 		if us, ok := botDB.user(u.ID); ok {
@@ -722,36 +737,76 @@ func guiBotState() botState {
 	return st
 }
 
-type friendView struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	Lang      string   `json:"lang"`
-	Premium   bool     `json:"premium"`
-	FirstSeen string   `json:"firstSeen"`
-	LastSeen  string   `json:"lastSeen"`
-	Downloads int      `json:"downloads"`
-	Failed    int      `json:"failed"`
-	Bytes     string   `json:"bytes"`
-	Sites     string   `json:"sites"`
-	Recent    []string `json:"recent"`
+type userView struct {
+	ID        int64      `json:"id"`
+	Name      string     `json:"name"`
+	Access    bool       `json:"access"` // false — доступ убран, но загрузки остались в журнале
+	Lang      string     `json:"lang"`
+	Premium   bool       `json:"premium"`
+	FirstSeen string     `json:"firstSeen"`
+	LastSeen  string     `json:"lastSeen"`
+	Downloads int        `json:"downloads"`
+	Failed    int        `json:"failed"`
+	Bytes     string     `json:"bytes"`
+	Sites     string     `json:"sites"`
+	Links     []linkView `json:"links"` // все ссылки, которые присылал пользователь, новые первыми
 }
 
-func guiFriends() []friendView {
-	out := []friendView{} // пустой список, а не null — иначе окно ждёт вечно
+type linkView struct {
+	Time  string `json:"time"`
+	URL   string `json:"url"`
+	Title string `json:"title"`
+	Size  string `json:"size"`
+	OK    bool   `json:"ok"`
+	Audio bool   `json:"audio"`
+	Error string `json:"error"`
+}
+
+// guiUsers — пользователи бота: с доступом и те, у кого доступ убран, но остались загрузки.
+func guiUsers() []userView {
+	out := []userView{} // пустой список, а не null — иначе окно ждёт вечно
+	access := map[int64]bool{}
+	ids := []int64{}
 	for _, u := range friendsCopy() {
-		f := friendView{ID: u.ID, Name: u.Name}
-		if st, ok := botDB.user(u.ID); ok {
-			f.Lang, f.Premium = st.Lang, st.Premium
-			f.FirstSeen, f.LastSeen = st.FirstSeen.Format("02.01.2006"), st.LastSeen.Format("02.01 15:04")
-			f.Downloads, f.Failed, f.Bytes = st.Downloads, st.Failed, formatBytes(float64(st.Bytes))
-			f.Sites = botDB.topSites(u.ID, 3)
-		}
-		for _, e := range botDB.history(u.ID, 5, true) {
-			f.Recent = append(f.Recent, e.Time.Format("02.01 15:04")+" · "+truncate(e.Title, 60))
-		}
-		out = append(out, f)
+		access[u.ID] = true
+		ids = append(ids, u.ID)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Downloads > out[j].Downloads })
+	for _, st := range botDB.allUsers() {
+		if !access[st.ID] && st.Downloads+st.Failed > 0 {
+			ids = append(ids, st.ID)
+		}
+	}
+	for _, id := range ids {
+		u := userView{ID: id, Access: access[id], Links: []linkView{}}
+		if st, ok := botDB.user(id); ok {
+			u.Name, u.Lang, u.Premium = st.Name, st.Lang, st.Premium
+			u.FirstSeen, u.LastSeen = st.FirstSeen.Format("02.01.2006"), st.LastSeen.Format("02.01 15:04")
+			u.Downloads, u.Failed, u.Bytes = st.Downloads, st.Failed, formatBytes(float64(st.Bytes))
+			u.Sites = botDB.topSites(id, 3)
+		}
+		if u.Name == "" {
+			for _, f := range friendsCopy() {
+				if f.ID == id {
+					u.Name = f.Name
+				}
+			}
+		}
+		for _, e := range botDB.history(id, botLogLimit, false) {
+			l := linkView{Time: e.Time.Format("02.01.2006 15:04"), URL: e.URL, Title: e.Title, OK: e.OK,
+				Audio: e.Audio, Error: e.Error}
+			if e.Size > 0 {
+				l.Size = formatBytes(float64(e.Size))
+			}
+			u.Links = append(u.Links, l)
+		}
+		out = append(out, u)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Access != out[j].Access {
+			return out[i].Access
+		}
+		return out[i].Downloads > out[j].Downloads
+	})
 	return out
 }
 

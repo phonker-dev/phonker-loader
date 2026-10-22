@@ -16,7 +16,7 @@ func botMenu() {
 	for {
 		header("TELEGRAM-БОТ")
 		if cfg.BotToken == "" {
-			fmt.Println(" Друзья присылают боту ссылку, этот ПК скачивает видео и отправляет")
+			fmt.Println(" Пользователи присылают боту ссылку, программа скачивает файл и отправляет")
 			fmt.Println(" его в чат. Бесплатно и без рекламы, работает, пока открыта программа.")
 			fmt.Println()
 			fmt.Println(" Чтобы начать, нужен токен бота — это займёт минуту:")
@@ -24,7 +24,7 @@ func botMenu() {
 			fmt.Println(rule())
 		}
 		reqs := len(botDB.requests())
-		fmt.Printf(" Друзья     : %d", len(friendsCopy()))
+		fmt.Printf(" Пользователи: %d", len(friendsCopy()))
 		if reqs > 0 {
 			fmt.Print(yellow(fmt.Sprintf("   · ждут доступа: %d", reqs)))
 		}
@@ -38,7 +38,7 @@ func botMenu() {
 		} else {
 			fmt.Println(" [2] Запросы на доступ " + dim("(нет)"))
 		}
-		fmt.Println(" [3] Друзья и статистика")
+		fmt.Println(" [3] Пользователи и статистика")
 		fmt.Println(" [4] Журнал загрузок")
 		fmt.Println(" [5] Автозапуск вместе с Windows")
 		if cfg.BotToken == "" {
@@ -235,10 +235,10 @@ func tokenMenu() {
 
 func friendsMenu() {
 	for {
-		header("ДРУЗЬЯ")
+		header("ПОЛЬЗОВАТЕЛИ")
 		friends := friendsCopy()
 		if len(friends) == 0 {
-			remember(" Друзей пока нет. Пусть друг напишет боту что угодно, пока бот запущен —")
+			remember(" Пользователей пока нет. Когда кто-то напишет боту, пока он запущен,")
 			remember(" в окне программы появится запрос, ответь на него y.")
 			return
 		}
@@ -402,7 +402,7 @@ func (b *bot) render(proxy string) {
 	fmt.Println(rule())
 	fmt.Println(" Ссылка   : t.me/" + b.name)
 	fmt.Println(" Прокси   : " + proxy)
-	fmt.Printf(" Друзья   : %d · отправлено: %d (%s) · в работе: %d\n", len(friendsCopy()),
+	fmt.Printf(" Польз.   : %d · отправлено: %d (%s) · в работе: %d\n", len(friendsCopy()),
 		b.sessionOK.Load(), formatBytes(float64(b.sessionBytes.Load())), b.active.Load())
 	fmt.Println(rule())
 	events := b.events
@@ -410,7 +410,7 @@ func (b *bot) render(proxy string) {
 		events = events[len(events)-botEventsShown:]
 	}
 	if len(events) == 0 {
-		fmt.Println(dim(" Пока тихо. Когда друзья пришлют ссылку — увидишь здесь."))
+		fmt.Println(dim(" Событий пока нет."))
 	}
 	for _, ev := range events {
 		fmt.Println(truncate(" "+dim(ev.time.Format("15:04"))+"  "+ev.text+ev.status, width+20))

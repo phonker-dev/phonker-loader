@@ -44,16 +44,16 @@
   <section id="tab-bot" class="tab">
     <header class="page-head">
       <h1>Telegram-бот</h1>
-      <p>Друзья присылают ссылку — этот компьютер скачивает видео и отправляет его в чат.</p>
+      <p>Пользователи присылают боту ссылку — программа скачивает файл и отправляет его в чат.</p>
     </header>
     <nav class="seg" id="bot-subtabs">
       <button data-sub="panel" class="active">Панель</button>
-      <button data-sub="friends">Друзья</button>
-      <button data-sub="journal">Журнал</button>
+      <button data-sub="users">Пользователи</button>
+      <button data-sub="journal">Журнал загрузок</button>
       <button data-sub="botsettings">Настройки бота</button>
     </nav>
     <div id="bot-panel" class="sub active"></div>
-    <div id="bot-friends" class="sub"></div>
+    <div id="bot-users" class="sub"></div>
     <div id="bot-journal" class="sub"></div>
     <div id="bot-botsettings" class="sub"></div>
   </section>
@@ -109,15 +109,17 @@
       </table>
     </div>
     <div class="card">
-      <h2>Telegram-бот для друзей</h2>
+      <h2>Telegram-бот</h2>
       <ol>
         <li>В Telegram открой <b>@BotFather</b> → <code>/newbot</code> → получи токен.</li>
         <li>Настройки → «Включить раздел «Бот»» → вставь токен.</li>
-        <li>Бот → «Запустить». Отправь друзьям ссылку на бота.</li>
-        <li>Новый друг пишет боту — появится запрос: «Разрешить» или «Отказать». Ответить можно и позже.</li>
+        <li>Бот → «Запустить». Ссылка на бота — рядом со статусом.</li>
+        <li>Новый пользователь пишет боту — появится запрос на доступ: «Разрешить» или «Отказать». Ответить можно и позже.</li>
       </ol>
       <p>Раздел «Бот» включается в Настройках — обычному пользователю он не нужен, поэтому скрыт.
-        У каждого друга вверху чата закреплён статус 🟢 Online / 🔴 Offline. Бот работает, пока открыто это окно.</p>
+        У каждого пользователя вверху чата закреплён статус 🟢 Online / 🔴 Offline. Бот работает, пока открыто это окно.</p>
+      <p>Бот → «Пользователи»: у каждого раскрывается полная история ссылок. «Журнал загрузок» — все загрузки через бота,
+        «Журнал событий» на панели хранится за всё время.</p>
     </div>
     <div class="card">
       <h2>Полезное</h2>
@@ -126,7 +128,7 @@
         <tr><td>Ctrl+V</td><td>вставить ссылку и сразу начать поиск</td></tr>
       </table>
       <p>Делиться программой можно: отдавай только exe, без <code>settings.json</code> и <code>bot_data.json</code>
-        (в них токен бота и данные друзей). Старый консольный интерфейс: запусти exe с параметром <code>--console</code>.</p>
+        (в них токен бота и данные пользователей). Старый консольный интерфейс: запусти exe с параметром <code>--console</code>.</p>
       <p class="dim">Создатель: <a href="#" data-url="https://t.me/bananas_ananass">@bananas_ananass</a></p>
     </div>
   </section>

@@ -27,7 +27,7 @@ type botUser struct {
 
 var cfg settings
 
-// cfgMu защищает список друзей: в оконном режиме его одновременно читает бот и меняет окно.
+// cfgMu защищает список пользователей бота: в оконном режиме его одновременно читает бот и меняет окно.
 var cfgMu sync.Mutex
 
 func isFriend(id int64) bool {

@@ -16,11 +16,11 @@ import (
 	"time"
 )
 
-// Telegram-бот: друзья присылают ссылку — программа на этом ПК скачивает видео
+// Telegram-бот: пользователи присылают ссылку — программа на этом ПК скачивает видео
 // (через тот же прокси) и отправляет его в чат. Сервер не нужен: бот сам опрашивает
 // Telegram, поэтому не нужны ни белый IP, ни открытые порты. Работает, пока запущен.
 //
-// Доступ только у тех, кого владелец разрешил. Список друзей — в settings.json,
+// Доступ только у тех, кого владелец разрешил. Список пользователей — в settings.json,
 // статистика, журнал и запросы на доступ — в bot_data.json.
 //
 // Здесь — «движок» бота. Им управляют и консоль (botconsole.go), и окно (gui*.go).
@@ -45,7 +45,7 @@ var (
 	botHeights = []int{1080, 720, 480, 360} // если видео не влезает в 50 МБ — пробуем качество ниже
 )
 
-// ---------- тексты для друзей ----------
+// ---------- тексты для пользователей бота ----------
 
 const (
 	profileDescription = "Скачиваю видео и музыку по ссылке.\nTikTok · YouTube · Reels · VK · SoundCloud\n\n"
@@ -126,6 +126,7 @@ type bot struct {
 }
 
 type botEvent struct {
+	id     int64 // номер в журнале событий (bot_data.json)
 	time   time.Time
 	text   string
 	status string
@@ -174,6 +175,7 @@ func startBot(consoleMode bool) (*bot, error) {
 	goOffline := func() { b.setOffline() }
 	botOnExit.Store(&goOffline)
 
+	b.note("бот @%s запущен", b.name)
 	go b.updatePins(true)
 	for _, id := range botDB.takeNotify() {
 		name := ""
@@ -189,6 +191,11 @@ func startBot(consoleMode bool) (*bot, error) {
 
 // stop останавливает бота. offline — поставить статус «не в сети» (при перезапуске не нужно).
 func (b *bot) stop(offline bool) {
+	if offline {
+		b.note("бот остановлен — отправлено за сессию: %d (%s)", b.sessionOK.Load(), formatBytes(float64(b.sessionBytes.Load())))
+	} else {
+		b.note("бот перезапускается")
+	}
 	b.cancel()
 	b.mu.Lock()
 	for op := range b.ops {
@@ -208,7 +215,7 @@ func (b *bot) stop(offline bool) {
 	botOnExit.Store(nil)
 }
 
-// setOffline — описание бота и закреплённые сообщения друзей переводятся в «не в сети».
+// setOffline — описание бота и закреплённые сообщения пользователей переводятся в Offline.
 func (b *bot) setOffline() {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
@@ -275,11 +282,13 @@ func (b *bot) changed() {
 	}
 }
 
-// note добавляет событие на панель и возвращает его, чтобы потом обновить статус.
+// note добавляет событие на панель и в постоянный журнал событий и возвращает его,
+// чтобы потом обновить статус.
 func (b *bot) note(format string, a ...any) *botEvent {
 	text := strings.ReplaceAll(fmt.Sprintf(format, a...), "\n", " ")
 	text = strings.Join(strings.Fields(text), " ")
 	ev := &botEvent{time: time.Now(), text: text}
+	ev.id = botDB.addEvent(ansiRe.ReplaceAllString(text, ""))
 	b.viewMu.Lock()
 	b.events = append(b.events, ev)
 	if len(b.events) > botEventsKept {
@@ -293,14 +302,32 @@ func (b *bot) note(format string, a ...any) *botEvent {
 	return ev
 }
 
+// setEvent обновляет статус события. В журнал на диске пишется только итог (final),
+// промежуточное «качаю 45%» живёт в памяти — чтобы не переписывать файл каждые 3 секунды.
 func (b *bot) setEvent(ev *botEvent, status string, final bool) {
 	b.viewMu.Lock()
 	ev.status = "  " + status
 	b.viewMu.Unlock()
+	if final {
+		plain := strings.TrimSpace(ansiRe.ReplaceAllString(status, ""))
+		botDB.setEventStatus(ev.id, plain, eventKind(plain))
+	}
 	if b.consoleMode && (!vt || !isConsole) && final {
 		fmt.Println(dim(ev.time.Format("15:04")) + " " + ev.text + ev.status)
 	}
 	b.changed()
+}
+
+func eventKind(status string) string {
+	switch {
+	case strings.HasPrefix(status, "OK"):
+		return "ok"
+	case strings.HasPrefix(status, "ошибка"):
+		return "err"
+	case status != "":
+		return "work"
+	}
+	return "info"
 }
 
 type eventView struct {
@@ -310,25 +337,32 @@ type eventView struct {
 	Kind   string `json:"kind"` // ok, err, work, info
 }
 
-// eventsView — события для окна: новые сверху, без цветовых кодов консоли.
-func (b *bot) eventsView() []eventView {
-	b.viewMu.Lock()
-	defer b.viewMu.Unlock()
-	out := make([]eventView, 0, len(b.events))
-	for i := len(b.events) - 1; i >= 0; i-- {
-		ev := b.events[i]
-		status := strings.TrimSpace(ansiRe.ReplaceAllString(ev.status, ""))
-		kind := "info"
-		switch {
-		case strings.HasPrefix(status, "OK"):
-			kind = "ok"
-		case strings.HasPrefix(status, "ошибка"):
-			kind = "err"
-		case status != "":
-			kind = "work"
+// eventsView — журнал событий для окна: новые сверху, из bot_data.json (за всё время).
+// У событий, которые ещё идут (загрузка в процессе), статус берётся из памяти работающего бота.
+func eventsView(b *bot, n int) []eventView {
+	live := map[int64]string{}
+	if b != nil {
+		b.viewMu.Lock()
+		for _, ev := range b.events {
+			live[ev.id] = strings.TrimSpace(ansiRe.ReplaceAllString(ev.status, ""))
 		}
-		out = append(out, eventView{Time: ev.time.Format("15:04"), Text: ansiRe.ReplaceAllString(ev.text, ""),
-			Status: status, Kind: kind})
+		b.viewMu.Unlock()
+	}
+	today := time.Now().Format("2006-01-02")
+	var out []eventView
+	for _, ev := range botDB.events(n) {
+		status, kind := ev.Status, ev.Kind
+		if s, ok := live[ev.ID]; ok && status == "" {
+			status, kind = s, eventKind(s)
+		}
+		if kind == "" {
+			kind = "info"
+		}
+		when := ev.Time.Format("02.01 15:04")
+		if ev.Time.Format("2006-01-02") == today {
+			when = ev.Time.Format("15:04")
+		}
+		out = append(out, eventView{Time: when, Text: ev.Text, Status: status, Kind: kind})
 	}
 	return out
 }
@@ -337,7 +371,7 @@ func (b *bot) eventsView() []eventView {
 
 func (b *bot) allow(u botUser) {
 	if err := grantAccess(u, false); err != nil {
-		b.note("%s не удалось сохранить список друзей: %v", red("[!]"), err)
+		b.note("%s не удалось сохранить список пользователей: %v", red("[!]"), err)
 	}
 	b.note("%s %s получил доступ", green("[+]"), u.Name)
 	name := u.Name
@@ -450,7 +484,7 @@ func (b *bot) handle(m *tgMessage) {
 		return
 	}
 
-	// Друзья, которые пришли до появления кнопок, получат их один раз.
+	// Пользователи, которые пришли до появления кнопок, получат их один раз.
 	if !botDB.hasKeyboard(user.ID) {
 		b.send(chat, "Внизу появились кнопки «"+btnHistory+"» и «"+btnHelp+"».", 0, replyKeyboard())
 		botDB.setKeyboard(user.ID)

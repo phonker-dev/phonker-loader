@@ -42,7 +42,7 @@ type statsReport struct {
 	Video   int        `json:"video"`
 	Audio   int        `json:"audio"`
 	Sites   []string   `json:"sites"`
-	Friends []string   `json:"friends"`
+	Users   []string   `json:"users"` // самые активные пользователи бота
 	Since   string     `json:"since"`
 	Unknown int        `json:"unknown"` // старые загрузки без известного размера
 }
@@ -119,7 +119,7 @@ func buildStats() statsReport {
 			}
 			friends[key].add(it)
 		}
-		rep.Friends = topCounters(friends, 5, func(k string) string {
+		rep.Users = topCounters(friends, 5, func(k string) string {
 			var id int64
 			fmt.Sscan(k, &id)
 			if st, ok := botDB.user(id); ok {
@@ -169,8 +169,8 @@ func statsScreen() {
 	fmt.Println(rule())
 	fmt.Printf(" Итого   : %s (видео %d, mp3 %d)\n", rep.Total, rep.Video, rep.Audio)
 	fmt.Println(" Сайты   : " + joinComma(rep.Sites))
-	if len(rep.Friends) > 0 {
-		fmt.Println(" Друзья  : " + joinComma(rep.Friends))
+	if len(rep.Users) > 0 {
+		fmt.Println(" Бот     : " + joinComma(rep.Users))
 	}
 	fmt.Println(dim(" Считается с " + rep.Since + "."))
 	if rep.Unknown > 0 {
