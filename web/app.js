@@ -164,6 +164,7 @@ function renderSide() {
 
   // Обычному пользователю бот не нужен: раздел скрыт, пока его не включат в Настройках.
   $('#nav [data-tab="bot"]').hidden = !b.visible;
+  $$(".bot-only").forEach((el) => { el.hidden = !b.visible; }); // справка про бота — только у владельца
   if (!b.visible && tab === "bot") showTab("download");
   const html =
     (b.visible ? item("бот", bot, "click", `data-goto="bot"`) : "") +
@@ -574,15 +575,11 @@ function renderSettings() {
       </div>
       <div class="hint">YouTube регулярно меняет защиту. Если видео перестали качаться — обнови.</div>
     </div>
-    <div class="card">
+    ${state.bot.visible && !state.bot.hasToken ? `<div class="card">
       <h2>Telegram-бот</h2>
-      <p>Пользователи присылают боту ссылку — программа скачивает файл и отправляет его в чат.
-        Для обычной работы не нужен, поэтому раздел скрыт.</p>
-      <div class="actions">${state.bot.visible
-        ? (state.bot.hasToken ? `<span class="dim" style="align-self:center">Раздел включён: бот настроен.</span>`
-          : `<button class="btn ghost" data-action="showbot-off">Скрыть раздел «Бот»</button>`)
-        : `<button class="btn" data-action="showbot-on">Включить раздел «Бот»</button>`}</div>
-    </div>
+      <p>Раздел «Бот» включён, но токен ещё не указан. Если бот не нужен — раздел можно скрыть.</p>
+      <div class="actions"><button class="btn ghost" data-action="showbot-off">Скрыть раздел «Бот»</button></div>
+    </div>` : ""}
     <div class="card">
       <h2>Программа</h2>
       <div class="kv"><span>Версия</span><span>${esc(state.version)}</span>
@@ -654,12 +651,6 @@ document.addEventListener("click", async (e) => {
     case "cookies-path": return act("settings/cookies", { path: $("#cookies-path").value }, "Cookies подключены");
     case "cookies-clear": return act("settings/cookies", { path: "" }, "Cookies больше не используются");
     case "ytdlp-update": return act("ytdlp/update", {});
-    case "showbot-on":
-      if (await act("settings/showbot", { on: true }, "Раздел «Бот» включён — он появился слева")) {
-        state.bot.visible = true; // не ждём следующего обновления, иначе окно тут же вернёт на «Скачать»
-        showTab("bot");
-      }
-      return;
     case "showbot-off": return act("settings/showbot", { on: false }, "Раздел «Бот» скрыт");
     case "open-log": return act("openlog", {});
     case "crash-dismiss": return act("crash/dismiss", {});

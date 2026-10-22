@@ -91,7 +91,9 @@ func printMenu() {
 	fmt.Println(" [2] Открыть папку загрузок")
 	fmt.Println(" [3] История загрузок")
 	fmt.Println(" [4] Статистика")
-	if reqs := len(botDB.requests()); reqs > 0 {
+	if !botVisible() {
+		// пункт [5] скрыт: обычному пользователю бот не нужен
+	} else if reqs := len(botDB.requests()); reqs > 0 {
 		fmt.Println(" [5] Telegram-бот " + yellow(fmt.Sprintf("(ждут доступа: %d)", reqs)))
 	} else {
 		fmt.Println(" [5] Telegram-бот")
@@ -146,6 +148,10 @@ func mainMenu() {
 		case "4":
 			statsScreen()
 		case "5":
+			if !botVisible() {
+				eraseInputLine()
+				continue
+			}
 			botMenu()
 		case "6":
 			settingsMenu()

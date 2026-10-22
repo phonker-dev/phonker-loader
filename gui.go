@@ -86,8 +86,15 @@ func runGUI() {
 	logf("окно: http://127.0.0.1:%d", guiPort)
 	go func() { _ = srv.Serve(ln) }()
 
-	if hasFlag("--bot") && cfg.BotToken != "" {
-		guiStartBot()
+	// --bot: с токеном — сразу запустить бота (автозапуск); без токена — открыть раздел «Бот»,
+	// чтобы владелец мог его настроить. Обычный пользователь этого параметра не знает и раздела не видит.
+	if hasFlag("--bot") {
+		if cfg.BotToken != "" {
+			guiStartBot()
+		} else if !cfg.ShowBot {
+			cfg.ShowBot = true
+			_ = saveSettings()
+		}
 	}
 
 	if hasFlag("--no-window") {
